@@ -17,7 +17,38 @@ import html2text
 # Create the Flask application that provides the bot foundation
 app = Flask(__name__)
 
-cmdid=0
+sessions_by_room_id = {}
+sessions_by_ws = {}
+
+class Session():
+	def __init__(self, room_id):
+		self.room_id = room_id
+		self.ws = None
+		self.thread = None
+		self.cmdid = 0
+		sessions_by_room_id[room_id] = self
+	
+	def connect_ws(self):
+		self.ws = websocket.WebSocketApp("ws://localhost:8002/?%s"%self.room_id,
+			on_message = on_ws_message,
+			on_error = on_ws_error,
+			on_close = on_ws_close)
+		self.ws.on_open = on_ws_open
+
+		sessions_by_ws[self.ws] = self
+
+		self.thread = thread.start_new_thread(self.ws.run_forever, ())
+
+	def send_ws(self, message):
+		if self.ws is None:
+			self.connect_ws()
+
+		self.ws.send(message)
+		
+	def get_cmdid(self):
+		self.cmdid=self.cmdid+1
+		return self.cmdid
+
 
 @app.route('/', methods=['POST'])
 def process_webhook():
@@ -36,10 +67,15 @@ def process_webhook():
 	
 	sys.stderr.write("Message from: " + message.personEmail + "\n")
 
-	# spark.messages.create(roomId=room_id, markdown=message.text)
-	global cmdid
-	cmdid=cmdid+1
-	ws.send("[\"text\", [\"%s\"], {\"cmdid\": %d}]"%(message.text, cmdid))
+	try:
+		session = sessions_by_room_id[room_id]
+	except:
+		session = Session(room_id)
+		if session is None:
+			sys.stderr.write("ERROR: Failed to create session")
+			return ""
+
+	session.send_ws("[\"text\", [\"%s\"], {\"cmdid\": %d}]"%(message.text, session.get_cmdid()))
 
 	return ""
 
@@ -79,7 +115,13 @@ def spark_setup(email, token):
 def on_ws_message(ws, message):
 	msg = json.loads(message)
 	sys.stderr.write("\n\nReceived websocket message: CMD: '%s', Args: %s, KWArgs: %s\n\n"%(msg[0], str(msg[1]), str(msg[2])))
-	spark.messages.create(toPersonEmail="cgascoig@cisco.com", markdown="```\n%s\n```" % html2text.html2text(msg[1][0]))
+	
+	try:
+		session = sessions_by_ws[ws]
+	except:
+		sys.stderr.write("ERROR: Failed to find session for websocket!!!\n")
+
+	spark.messages.create(roomId=session.room_id, markdown="```\n%s\n```" % html2text.html2text(msg[1][0]))
 
 def on_ws_error(ws, error):
 	sys.stderr.write("WebSocket Error: %s\n"%error)
@@ -93,13 +135,13 @@ def on_ws_close(ws):
 if __name__ == '__main__':
 	# setup websocket backend connection
 	websocket.enableTrace(True)
-	ws = websocket.WebSocketApp("ws://localhost:8002/?eswcgcpqharrgw1mmodrerx1mxmu4m8n",
-		on_message = on_ws_message,
-		on_error = on_ws_error,
-		on_close = on_ws_close)
-	ws.on_open = on_ws_open
-	ws_thread = thread.start_new_thread(ws.run_forever, ())
-	# ws.run_forever()
+#	ws = websocket.WebSocketApp("ws://localhost:8002/?eswcgcpqharrgw1mmodrerx1mxmu4m8n",
+#		on_message = on_ws_message,
+#		on_error = on_ws_error,
+#		on_close = on_ws_close)
+#	ws.on_open = on_ws_open
+#	ws_thread = thread.start_new_thread(ws.run_forever, ())
+#	# ws.run_forever()
 
 	bot_email = os.getenv("SPARK_BOT_EMAIL")
 	spark_token = os.getenv("SPARK_BOT_TOKEN")
