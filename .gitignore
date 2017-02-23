@@ -3,3 +3,4 @@ lib/
 include/
 local/
 settings.sh
+pip-selfcheck.json
